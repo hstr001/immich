@@ -22,17 +22,58 @@ final _log = Logger('HdrImageLayer');
 // Probing a remote original downloads it, so remember the answer per source.
 final _probeCache = <String, Future<bool>>{};
 
+/// Starts the gain map check for [asset] ahead of time, e.g. for the next slideshow slide.
+void prefetchHdr(BaseAsset asset) {
+  final source = _sourceFor(asset, null);
+  if (source != null) {
+    unawaited(_probeSource(source));
+  }
+}
+
+Future<bool> _probeSource(Map<String, String> source) {
+  final key = source.toString();
+  final probe = _probeCache[key] ??= _channel
+      .invokeMethod<bool>('probe', source)
+      .then((value) => value ?? false)
+      .catchError((Object error) {
+        _log.warning('HDR probe failed', error);
+        unawaited(_probeCache.remove(key));
+        return false;
+      });
+  while (_probeCache.length > _maxCachedProbes) {
+    unawaited(_probeCache.remove(_probeCache.keys.first));
+  }
+  return probe;
+}
+
 /// Draws the asset natively on Android 14+ when it carries a gain map, so the window can show it in HDR.
 ///
-/// Gestures stay with the [PhotoView] underneath: this layer ignores pointers and mirrors the
-/// controller's position and scale onto the native view.
+/// This layer ignores pointers. With a [controller], it mirrors the [PhotoView] position and scale
+/// onto the native view; with [HdrImageLayer.fitted], the native view centers the image itself.
 class HdrImageLayer extends StatefulWidget {
   final BaseAsset asset;
   final String? localFilePath;
   final PhotoViewControllerBase? controller;
   final bool enabled;
 
-  const HdrImageLayer({super.key, required this.asset, required this.enabled, this.localFilePath, this.controller});
+  /// Fitted mode: cover instead of contain the view.
+  final bool cover;
+
+  /// Fitted mode: extra scale around the center, e.g. for the slideshow's Ken Burns effect.
+  final Animation<double>? zoom;
+
+  const HdrImageLayer({super.key, required this.asset, required this.enabled, this.localFilePath, this.controller})
+    : cover = false,
+      zoom = null;
+
+  const HdrImageLayer.fitted({
+    super.key,
+    required this.asset,
+    required this.enabled,
+    required this.cover,
+    required Animation<double> this.zoom,
+  }) : localFilePath = null,
+       controller = null;
 
   @override
   State<HdrImageLayer> createState() => _HdrImageLayerState();
@@ -43,7 +84,8 @@ class _HdrImageLayerState extends State<HdrImageLayer> {
   bool _hasGainmap = false;
   MethodChannel? _viewChannel;
   StreamSubscription<PhotoViewControllerValue>? _controllerSub;
-  Rect? _sentTarget;
+  Animation<double>? _listenedZoom;
+  Object? _sentTarget;
   double _devicePixelRatio = 1.0;
 
   @override
@@ -63,7 +105,7 @@ class _HdrImageLayerState extends State<HdrImageLayer> {
       _hasGainmap = false;
       _viewChannel = null;
     }
-    if (oldWidget.controller != widget.controller) {
+    if (oldWidget.controller != widget.controller || oldWidget.zoom != widget.zoom) {
       _listen();
       _sentTarget = null;
     }
@@ -75,12 +117,15 @@ class _HdrImageLayerState extends State<HdrImageLayer> {
   @override
   void dispose() {
     unawaited(_controllerSub?.cancel());
+    _listenedZoom?.removeListener(_sendTarget);
     super.dispose();
   }
 
   void _listen() {
     unawaited(_controllerSub?.cancel());
     _controllerSub = widget.controller?.outputStateStream.listen((_) => _sendTarget());
+    _listenedZoom?.removeListener(_sendTarget);
+    _listenedZoom = widget.zoom?..addListener(_sendTarget);
   }
 
   Future<void> _probe() async {
@@ -90,20 +135,7 @@ class _HdrImageLayerState extends State<HdrImageLayer> {
       return;
     }
 
-    final key = source.toString();
-    final probe = _probeCache[key] ??= _channel
-        .invokeMethod<bool>('probe', source)
-        .then((value) => value ?? false)
-        .catchError((Object error) {
-          _log.warning('HDR probe failed', error);
-          unawaited(_probeCache.remove(key));
-          return false;
-        });
-    while (_probeCache.length > _maxCachedProbes) {
-      unawaited(_probeCache.remove(_probeCache.keys.first));
-    }
-
-    final hasGainmap = await probe;
+    final hasGainmap = await _probeSource(source);
     if (mounted && identical(_source, source) && hasGainmap) {
       setState(() => _hasGainmap = true);
     }
@@ -117,9 +149,23 @@ class _HdrImageLayerState extends State<HdrImageLayer> {
 
   void _sendTarget() {
     final channel = _viewChannel;
+    if (!mounted || channel == null) {
+      return;
+    }
+
+    final zoom = widget.zoom;
+    if (zoom != null) {
+      final fit = (widget.cover, zoom.value);
+      if (fit != _sentTarget) {
+        _sentTarget = fit;
+        unawaited(channel.invokeMethod('setFit', {'cover': widget.cover, 'zoom': zoom.value}));
+      }
+      return;
+    }
+
     final controller = widget.controller;
     final boundaries = controller?.scaleBoundaries;
-    if (!mounted || channel == null || controller == null || boundaries == null) {
+    if (controller == null || boundaries == null) {
       return;
     }
 

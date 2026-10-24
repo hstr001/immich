@@ -106,6 +106,10 @@ private class HdrPlatformView(
         )
         result.success(null)
       }
+      "setFit" -> {
+        view.setFit(call.argument<Boolean>("cover")!!, call.argument<Double>("zoom")!!.toFloat())
+        result.success(null)
+      }
       else -> result.notImplemented()
     }
   }

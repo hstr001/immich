@@ -11,6 +11,8 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import androidx.annotation.RequiresApi
@@ -29,9 +31,9 @@ private const val TILE_SIZE = 512
 
 /**
  * Draws an image with its gain map so the window can render it in HDR. The layout and gestures stay
- * in Flutter: [setTarget] receives where the oriented image currently sits in view pixels. A
- * downsampled base layer is always drawn; full-resolution tiles are decoded for the visible area
- * once the zoom level needs more detail than the base provides.
+ * in Flutter: [setTarget] receives where the oriented image currently sits in view pixels, or
+ * [setFit] lets the view center it itself. A downsampled base layer is always drawn; full-resolution
+ * tiles are decoded for the visible area once the zoom level needs more detail than the base provides.
  */
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 class HdrImageView(context: Context) : View(context) {
@@ -49,6 +51,10 @@ class HdrImageView(context: Context) : View(context) {
   private val inverse = Matrix()
   private val visible = RectF()
   private var target: RectF? = null
+
+  // Set by setFit: the target follows the view size and the image's oriented dimensions.
+  private var fitCover = false
+  private var fitZoom: Float? = null
 
   private val tiles = HashMap<TileKey, Bitmap>()
   private val pending = HashSet<TileKey>()
@@ -95,8 +101,25 @@ class HdrImageView(context: Context) : View(context) {
 
   /** Where the oriented image is drawn, in view pixels. */
   fun setTarget(left: Float, top: Float, width: Float, height: Float) {
+    fitZoom = null
     target = RectF(left, top, left + width, top + height)
     invalidate()
+  }
+
+  /** Centers the image, contained or covering the view, then scales it by [zoom] around the center. */
+  fun setFit(cover: Boolean, zoom: Float) {
+    fitCover = cover
+    fitZoom = zoom
+    invalidate()
+  }
+
+  private fun fittedTarget(img: HdrImage, zoom: Float): RectF {
+    val scaleX = width.toFloat() / img.orientedWidth
+    val scaleY = height.toFloat() / img.orientedHeight
+    val scale = (if (fitCover) max(scaleX, scaleY) else min(scaleX, scaleY)) * zoom
+    val w = img.orientedWidth * scale
+    val h = img.orientedHeight * scale
+    return RectF((width - w) / 2, (height - h) / 2, (width + w) / 2, (height + h) / 2)
   }
 
   fun release() {
@@ -124,7 +147,7 @@ class HdrImageView(context: Context) : View(context) {
   override fun onDraw(canvas: Canvas) {
     val img = image ?: return
     val base = base ?: return
-    val target = target ?: return
+    val target = fitZoom?.let { fittedTarget(img, it) } ?: target ?: return
     if (target.isEmpty) return
 
     val scale = target.width() / img.orientedWidth
@@ -227,13 +250,37 @@ class HdrImageView(context: Context) : View(context) {
   }
 }
 
-/** Reference-counted, so overlapping views (e.g. during a page swipe) don't drop HDR mode early. */
+/**
+ * Reference-counted, so overlapping views (e.g. during a page swipe) don't drop HDR mode early.
+ * Releasing is delayed: on a slide change the old view detaches before the new one attaches, and
+ * every color mode switch makes the display reconfigure, which drops frames.
+ */
 private object HdrWindowMode {
+  private const val RELEASE_DELAY_MS = 1500L
+
   private var holders = 0
+  private val handler = Handler(Looper.getMainLooper())
+  private var pendingRelease: Runnable? = null
 
   fun update(activity: Activity, enabled: Boolean) {
     holders = max(0, holders + if (enabled) 1 else -1)
-    activity.window.colorMode =
-      if (holders > 0) ActivityInfo.COLOR_MODE_HDR else ActivityInfo.COLOR_MODE_DEFAULT
+    pendingRelease?.let(handler::removeCallbacks)
+    pendingRelease = null
+
+    if (holders > 0) {
+      if (activity.window.colorMode != ActivityInfo.COLOR_MODE_HDR) {
+        activity.window.colorMode = ActivityInfo.COLOR_MODE_HDR
+      }
+      return
+    }
+
+    val release = Runnable {
+      pendingRelease = null
+      if (holders == 0 && !activity.isDestroyed) {
+        activity.window.colorMode = ActivityInfo.COLOR_MODE_DEFAULT
+      }
+    }
+    pendingRelease = release
+    handler.postDelayed(release, RELEASE_DELAY_MS)
   }
 }

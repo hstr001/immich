@@ -5,6 +5,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/constants/enums.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
+import 'package:immich_mobile/presentation/widgets/asset_viewer/hdr_image_layer.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/video_viewer.widget.dart';
 import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
 import 'package:immich_mobile/presentation/widgets/images/progressive_image.widget.dart';
@@ -53,9 +54,10 @@ class SlideshowSlide extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scale = zoom.drive(Tween(begin: 1.0, end: 1.0 + _kenBurnsZoomMultiplier));
     final Widget content = asset.isImage || frozen
         ? ScaleTransition(
-            scale: zoom.drive(Tween(begin: 1.0, end: 1.0 + _kenBurnsZoomMultiplier)),
+            scale: scale,
             child: ProgressiveImage(
               provider: getFullImageProvider(asset, size: context.sizeData),
               builder: (context, provider) => PhotoView(
@@ -84,6 +86,14 @@ class SlideshowSlide extends StatelessWidget {
       children: [
         if (look == SlideshowLook.blurredBackground) _BlurredBackground(asset: asset),
         content,
+        // The frozen copy fading out on a slide change stays SDR.
+        if (asset.isImage && !frozen)
+          HdrImageLayer.fitted(
+            asset: asset,
+            enabled: isCurrent && (ModalRoute.of(context)?.isCurrent ?? true),
+            cover: look == SlideshowLook.cover,
+            zoom: scale,
+          ),
       ],
     );
   }

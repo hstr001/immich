@@ -12,6 +12,7 @@ import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/scroll_extensions.dart';
 import 'package:immich_mobile/generated/translations.g.dart';
 import 'package:immich_mobile/pages/common/settings.page.dart';
+import 'package:immich_mobile/presentation/widgets/asset_viewer/hdr_image_layer.widget.dart';
 import 'package:immich_mobile/presentation/widgets/slideshow/slideshow_controller.dart';
 import 'package:immich_mobile/presentation/widgets/slideshow/slideshow_progress_bar.widget.dart';
 import 'package:immich_mobile/presentation/widgets/slideshow/slideshow_slide.widget.dart';
@@ -101,6 +102,7 @@ class _SlideshowPageState extends ConsumerState<SlideshowPage>
       _slideshow.recalculateNextIndex();
     });
 
+    _slideshow.addListener(_prefetchNextHdr);
     _slideshow.goToNextSlide();
 
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive));
@@ -115,6 +117,7 @@ class _SlideshowPageState extends ConsumerState<SlideshowPage>
 
   @override
   void dispose() {
+    _slideshow.removeListener(_prefetchNextHdr);
     _slideshow.dispose();
     _fade.dispose();
     _pageController.dispose();
@@ -122,6 +125,15 @@ class _SlideshowPageState extends ConsumerState<SlideshowPage>
     unawaited(WakelockPlus.disable());
     unawaited(restoreEdgeToEdge());
     super.dispose();
+  }
+
+  /// Checks the upcoming slide for a gain map early, so HDR is ready when it is shown.
+  void _prefetchNextHdr() {
+    final next = _slideshow.nextIndex;
+    final asset = next != null ? _assetAt(next) : null;
+    if (asset != null) {
+      prefetchHdr(asset);
+    }
   }
 
   @override
