@@ -186,7 +186,7 @@ class RemoteImagesImpl(context: Context) : RemoteImageApi {
   }
 }
 
-private object ImageFetcherManager {
+internal object ImageFetcherManager {
   private lateinit var cacheDir: File
   private lateinit var fetcher: ImageFetcher
   private var initialized = false

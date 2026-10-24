@@ -14,6 +14,7 @@ import 'package:immich_mobile/extensions/scroll_extensions.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_details.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_stack.provider.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_stack.widget.dart';
+import 'package:immich_mobile/presentation/widgets/asset_viewer/hdr_image_layer.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/ocr_overlay.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/video_viewer.widget.dart';
 import 'package:immich_mobile/presentation/widgets/images/image_provider.dart';
@@ -490,6 +491,18 @@ class _AssetPageState extends ConsumerState<AssetPage> {
                     isPlayingMotionVideo: isPlayingMotionVideo,
                     localFilePath: viewIntentFilePath,
                     remoteThumbnailSize: thumbnailSize,
+                  ),
+                ),
+                // Always in the tree so toggling it doesn't shift the state of the siblings below.
+                SizedBox(
+                  width: viewportWidth,
+                  height: viewportHeight,
+                  child: HdrImageLayer(
+                    asset: displayAsset,
+                    localFilePath: viewIntentFilePath,
+                    controller: _viewController,
+                    // Leave the route transition and hero flight to the Flutter image.
+                    enabled: isCurrent && !isPlayingMotionVideo && (ModalRoute.of(context)?.isCurrent ?? true),
                   ),
                 ),
                 if (showingOcr && displayAsset.width != null && displayAsset.height != null)
