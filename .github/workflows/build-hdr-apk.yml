@@ -1,0 +1,82 @@
+name: Build HDR APK
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build and release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version-file: mobile/pubspec.yaml
+          cache: true
+
+      - name: Generate OpenAPI client
+        working-directory: ./open-api
+        run: |
+          version=$(jq -r '."generator-cli".version' openapitools.json)
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/openapi-generator-cli.jar" \
+            "https://repo1.maven.org/maven2/org/openapitools/openapi-generator-cli/$version/openapi-generator-cli-$version.jar"
+          printf '#!/bin/sh\nexec java -jar "%s" "$@"\n' "$RUNNER_TEMP/openapi-generator-cli.jar" > "$RUNNER_TEMP/bin/openapi-generator-cli"
+          chmod +x "$RUNNER_TEMP/bin/openapi-generator-cli"
+          PATH="$RUNNER_TEMP/bin:$PATH" bash ./bin/generate-dart-sdk.sh
+
+      - name: Generate Dart code
+        working-directory: ./mobile
+        run: |
+          flutter pub get --enforce-lockfile
+          for input in pigeon/*.dart; do dart run pigeon --input "$input"; done
+          dart format lib/platform/ > /dev/null
+          dart run easy_localization:generate -S ../i18n
+          dart run bin/generate_keys.dart
+          dart run drift_dev make-migrations
+          dart run build_runner build
+
+      - name: Build APK
+        working-directory: ./mobile
+        env:
+          KEY_JKS: ${{ secrets.KEY_JKS }}
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          PR_NUMBER: hdr
+        run: |
+          printf '%s' "$KEY_JKS" | base64 -d > android/key.jks
+          # Without the keystore Gradle silently signs with a throwaway debug key, which breaks updates.
+          if [[ ! -s android/key.jks ]]; then
+            echo "::error::Secret KEY_JKS fehlt"
+            exit 1
+          fi
+          flutter build apk --release
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' mobile/pubspec.yaml)
+          tag="hdr-v$version-$GITHUB_RUN_NUMBER"
+          apk="immich-hdr-v$version.apk"
+          cp mobile/build/app/outputs/flutter-apk/app-release.apk "$apk"
+          gh release create "$tag" "$apk" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Immich HDR v$version (Build $GITHUB_RUN_NUMBER)" \
+            --notes "Immich v$version mit HDR-Anzeige für Ultra-HDR-Fotos (Android 14+). Installiert sich als separate App \"Immich PR hdr\"."
