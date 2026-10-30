@@ -65,7 +65,8 @@ jobs:
             echo "::error::Secret KEY_JKS fehlt"
             exit 1
           fi
-          flutter build apk --release
+          # HDR needs Android 14+, which practically only runs on arm64 phones.
+          flutter build apk --release --target-platform android-arm64
 
       - name: Publish release
         env:
