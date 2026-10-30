@@ -153,6 +153,10 @@
     generate GeneratedPluginRegistrant.java -->
     <meta-data android:name="flutterEmbedding" android:value="2" />
 
+    <!-- Hybrid Composition++ for the HDR image view: unlike plain hybrid composition, it doesn't
+         move Flutter's rendering onto the main thread, which halved the frame rate while swiping. -->
+    <meta-data android:name="io.flutter.embedding.android.EnableHcpp" android:value="true" />
+
     <!-- Widgets -->
     <receiver
       android:name=".widget.RandomReceiver"

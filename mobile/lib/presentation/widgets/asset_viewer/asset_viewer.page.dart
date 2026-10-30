@@ -17,6 +17,7 @@ import 'package:immich_mobile/presentation/widgets/action_buttons/download_statu
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_page.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_preloader.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/asset_stack.provider.dart';
+import 'package:immich_mobile/presentation/widgets/asset_viewer/hdr_image_layer.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/viewer_bottom_app_bar.widget.dart';
 import 'package:immich_mobile/presentation/widgets/asset_viewer/viewer_top_app_bar.widget.dart';
 import 'package:immich_mobile/providers/asset_viewer/asset_viewer.provider.dart';
@@ -304,6 +305,8 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
         bottomNavigationBar: const ViewerBottomAppBar(),
         body: Stack(
           children: [
+            // Matches the HDR layer, which leaves the route transition to Flutter.
+            HdrCompositionKeeper(enabled: ModalRoute.of(context)?.isCurrent ?? true),
             NotificationListener<ScrollEndNotification>(
               onNotification: _onScrollEnd,
               child: PhotoViewGestureDetectorScope(

@@ -18,6 +18,7 @@ import java.util.concurrent.Executors
 
 private const val TAG = "HdrImagePlugin"
 private const val VIEW_TYPE = "immich/hdr_image_view"
+private const val KEEPER_VIEW_TYPE = "immich/hdr_keeper_view"
 
 /**
  * `probe` reports whether an asset carries a gain map; the platform view then renders it in HDR.
@@ -35,6 +36,7 @@ class HdrImagePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     channel.setMethodCallHandler(this)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
       binding.platformViewRegistry.registerViewFactory(VIEW_TYPE, HdrViewFactory(binding.binaryMessenger))
+      binding.platformViewRegistry.registerViewFactory(KEEPER_VIEW_TYPE, KeeperViewFactory())
     }
   }
 
@@ -75,6 +77,17 @@ private class HdrViewFactory(private val messenger: BinaryMessenger) :
   PlatformViewFactory(StandardMessageCodec.INSTANCE) {
   override fun create(context: Context, viewId: Int, args: Any?): PlatformView {
     return HdrPlatformView(context, viewId, messenger, HdrSource.fromMap(args as? Map<*, *>))
+  }
+}
+
+/** An empty view that only keeps Flutter in hybrid composition; see HdrCompositionKeeper in Dart. */
+private class KeeperViewFactory : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
+  override fun create(context: Context, viewId: Int, args: Any?): PlatformView {
+    val view = View(context)
+    return object : PlatformView {
+      override fun getView(): View = view
+      override fun dispose() {}
+    }
   }
 }
 

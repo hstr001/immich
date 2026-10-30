@@ -14,10 +14,65 @@ import 'package:immich_mobile/widgets/photo_view/photo_view.dart';
 import 'package:logging/logging.dart';
 
 const _viewType = 'immich/hdr_image_view';
+const _keeperViewType = 'immich/hdr_keeper_view';
 const _channel = MethodChannel('immich/hdr_image');
 const _maxCachedProbes = 200;
 
 final _log = Logger('HdrImageLayer');
+
+// Bumped whenever a native HDR view is created, which switches Flutter to hybrid composition.
+final _hdrViewsCreated = ValueNotifier<int>(0);
+
+// Whether Hybrid Composition++ (enabled in AndroidManifest.xml) is available; null until checked.
+bool? _hcpp;
+
+Future<bool> _checkHcpp() async {
+  return _hcpp ??= await HybridAndroidViewController.checkIfSupported().catchError((Object error) {
+    _log.warning('HCPP check failed', error);
+    return false;
+  });
+}
+
+/// Creates the native view with Hybrid Composition++ if available, else with plain hybrid composition.
+/// Call [_checkHcpp] first. Either keeps the view in the Android hierarchy; a texture-backed view would lose HDR.
+AndroidViewController _createAndroidView(
+  PlatformViewCreationParams params,
+  String viewType, {
+  Map<String, String>? creationParams,
+  void Function(int id)? onCreated,
+}) {
+  final controller = _hcpp == true
+      ? PlatformViewsService.initHybridAndroidView(
+          id: params.id,
+          viewType: viewType,
+          layoutDirection: TextDirection.ltr,
+          creationParams: creationParams,
+          creationParamsCodec: const StandardMessageCodec(),
+          onFocus: () => params.onFocusChanged(true),
+        )
+      : PlatformViewsService.initExpensiveAndroidView(
+          id: params.id,
+          viewType: viewType,
+          layoutDirection: TextDirection.ltr,
+          creationParams: creationParams,
+          creationParamsCodec: const StandardMessageCodec(),
+          onFocus: () => params.onFocusChanged(true),
+        );
+  controller.addOnPlatformViewCreatedListener(params.onPlatformViewCreated);
+  if (onCreated != null) {
+    controller.addOnPlatformViewCreatedListener(onCreated);
+  }
+  unawaited(controller.create());
+  return controller;
+}
+
+Widget _androidViewSurface(BuildContext context, PlatformViewController controller) {
+  return AndroidViewSurface(
+    controller: controller as AndroidViewController,
+    gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+    hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+  );
+}
 
 // Probing a remote original downloads it, so remember the answer per source.
 final _probeCache = <String, Future<bool>>{};
@@ -136,6 +191,9 @@ class _HdrImageLayerState extends State<HdrImageLayer> {
     }
 
     final hasGainmap = await _probeSource(source);
+    if (hasGainmap) {
+      await _checkHcpp();
+    }
     if (mounted && identical(_source, source) && hasGainmap) {
       setState(() => _hasGainmap = true);
     }
@@ -145,6 +203,7 @@ class _HdrImageLayerState extends State<HdrImageLayer> {
     _viewChannel = MethodChannel('$_viewType/$id');
     _sentTarget = null;
     _sendTarget();
+    _hdrViewsCreated.value++;
   }
 
   void _sendTarget() {
@@ -209,27 +268,73 @@ class _HdrImageLayerState extends State<HdrImageLayer> {
       child: PlatformViewLink(
         key: ValueKey(source.toString()),
         viewType: _viewType,
-        surfaceFactory: (context, controller) => AndroidViewSurface(
-          controller: controller as AndroidViewController,
-          gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-          hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+        surfaceFactory: _androidViewSurface,
+        onCreatePlatformView: (params) =>
+            _createAndroidView(params, _viewType, creationParams: source, onCreated: _onViewCreated),
+      ),
+    );
+  }
+}
+
+/// Keeps an empty native view on screen once an [HdrImageLayer] has shown one, as long as [enabled].
+///
+/// With hybrid composition, Flutter draws into an image view while a platform view is on screen and
+/// switches back to its surface view in the first frame without one. That surface still holds its
+/// last frame from before the switch, so on a page swipe, between the old HDR view going away and the
+/// new one being created, an earlier photo flashed up. Hybrid Composition++ doesn't switch surfaces,
+/// so the keeper stays inactive there.
+class HdrCompositionKeeper extends StatefulWidget {
+  final bool enabled;
+
+  const HdrCompositionKeeper({super.key, required this.enabled});
+
+  @override
+  State<HdrCompositionKeeper> createState() => _HdrCompositionKeeperState();
+}
+
+class _HdrCompositionKeeperState extends State<HdrCompositionKeeper> {
+  bool _keep = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _hdrViewsCreated.addListener(_onHdrViewCreated);
+  }
+
+  @override
+  void didUpdateWidget(HdrCompositionKeeper oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.enabled) {
+      _keep = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _hdrViewsCreated.removeListener(_onHdrViewCreated);
+    super.dispose();
+  }
+
+  void _onHdrViewCreated() {
+    if (mounted && widget.enabled && !_keep && _hcpp != true) {
+      setState(() => _keep = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_keep || !widget.enabled) {
+      return const SizedBox.shrink();
+    }
+
+    return IgnorePointer(
+      child: SizedBox.square(
+        dimension: 1,
+        child: PlatformViewLink(
+          viewType: _keeperViewType,
+          surfaceFactory: _androidViewSurface,
+          onCreatePlatformView: (params) => _createAndroidView(params, _keeperViewType),
         ),
-        // Hybrid composition keeps the view in the Android hierarchy; a texture-backed view would lose HDR.
-        onCreatePlatformView: (params) {
-          final controller =
-              PlatformViewsService.initExpensiveAndroidView(
-                  id: params.id,
-                  viewType: _viewType,
-                  layoutDirection: TextDirection.ltr,
-                  creationParams: source,
-                  creationParamsCodec: const StandardMessageCodec(),
-                  onFocus: () => params.onFocusChanged(true),
-                )
-                ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
-                ..addOnPlatformViewCreatedListener(_onViewCreated);
-          unawaited(controller.create());
-          return controller;
-        },
       ),
     );
   }
